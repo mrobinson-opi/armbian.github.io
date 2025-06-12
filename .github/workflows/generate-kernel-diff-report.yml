@@ -64,15 +64,15 @@ jobs:
 
           # Prompt
           prompt = (
-              "Write a journalistic-style weekly summary from these Git commit messages:\n\n" +
+              "Write a journalistic-style weekly summary from these Git commit messages, use https://www.armbian.com/newsflash/armbian-development-highlights-early-may-2025/ as a style refrence \n\n" +
               "\n".join(commits) +
-              "\n\nSkip trivial or automated changes. Emphasize noteworthy improvements or technical decisions. Format in Markdown."
+              "\n\nSkip trivial,reverted or automated changes. Emphasize noteworthy improvements or technical decisions. Format in Markdown."
           )
 
           response = client.chat.completions.create(
               model=model,
               messages=[
-                  {"role": "system", "content": "You are a helpful assistant."},
+                  {"role": "system", "content": "You are a technical writer for Armbian. You always take your time and make sure everything is correct."},
                   {"role": "user", "content": prompt}
               ],
               temperature=0.7,
