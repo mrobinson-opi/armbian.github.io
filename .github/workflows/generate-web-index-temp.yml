@@ -1,22 +1,13 @@
-name: Update download JSON index
+name: Temp: Generate download JSON and upload artifact
 on:
-  repository_dispatch:
-    types: ["Webindex update"]
-  workflow_dispatch:   # Manually triggered via GitHub Actions UI    
-
-concurrency:
-  group: redirector
-  cancel-in-progress: false
+  workflow_dispatch:
 
 jobs:
-
-  Webindex:
-
+  webindex-temp:
+    name: "Generate JSON Index (temp)"
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    name: "Generate JSON Index"
-    runs-on: "ubuntu-24.04"
     steps:
 
       - name: Checkout build framework repository
@@ -43,35 +34,20 @@ jobs:
           clean: false
           path: armbian.github.io
 
-      - name: Install SSH key
-        uses: shimataro/ssh-key-action@v2
-        with:
-          key: ${{ secrets.KEY_UPLOAD }}
-          known_hosts: ${{ secrets.KNOWN_HOSTS_ARMBIAN_UPLOAD }}
-          if_key_exists: replace
-
-      - name: "Install dependencies"
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: gh jc zip
-          version: 1.0
-
-      - name: "Generate map file"
+      - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y jq jc zip rsync gh python3-pip
 
-          # make sure its cleaned
+      - name: Generate map file
+        run: |
           rm -f exposed.map.autoproposal
-
-          # get all stable files we provide
           rsync --recursive --list-only rsync://rsync.armbian.com/dl/ \
           | awk '{ print $5 }' \
           | grep '\.xz$' \
           | grep -vE '\.txt|\.xz\.|homeassistant|openhab|kali|omv' \
           > /tmp/stable.txt
 
-          # generate map entries
-          # $1 = board
-          # $2 = branch
           function check_targets(){
           b=$(echo $1 | rev | cut -d"/" -f1 | rev | cut -d"." -f1)
           I=0
@@ -90,7 +66,6 @@ jobs:
           }
 
           for board in $(ls -1 build/config/boards/*.{conf,csc,wip,tvb}); do
-             # read kernel target
              if [[ $(grep KERNEL_TARGET -w $board | cut -d '"' -f 2 | sed "s/,/ /g" | wc -w) -gt 2 ]]; then
                 KERNEL_TARGET=$(grep KERNEL_TARGET -w $board | cut -d '"' -f 2 | awk -F, '{ print $1,$3,$2 }')
               else
@@ -112,48 +87,22 @@ jobs:
                 fi
              done || true
           done | tee -a > exposed.map.autoproposal
-          #
-          # Lets fix this and go back to manual in case of troubles
-          # cp exposed.map.autoproposal os/exposed.map
 
-      - name: "Build JSON file" # adjust "exposed" property while reading from download
+      - name: Build JSON file
         run: |
-
-          # prepare feeds
           A=$(rsync --recursive --list-only rsync://rsync.armbian.com/dl/ \
-              | awk '{
-              gsub(",", "", $2);                    # Remove commas in size
-              gsub("/", "-", $3);                   # Fix date format
-              url = "https://dl.armbian.com/" $5;  # Construct URL
-
-              # Include URLs matching /<folder>/archive/Armbian
-              if (url ~ /\/[^\/]+\/archive\/Armbian/) {
-              # Exclude if url matches any of the unwanted substrings
-              if (url !~ /\.txt|homeassistant|openhab|kali|omv/) {
-              print $2 "|" url "|" $3 "T" $4 "Z"
-              }
-              }
-              }')
+              | awk '{\n+              gsub(",", "", $2);\n+              gsub("/", "-", $3);\n+              url = "https://dl.armbian.com/" $5;\n+              if (url ~ /\/[^\/]+\/archive\/Armbian/) {\n+              if (url !~ \.txt|homeassistant|openhab|kali|omv) {\n+              print $2 "|" url "|" $3 "T" $4 "Z"\n+              }\n+              }\n+              }')
           B=$(gh release view --json assets --repo github.com/armbian/community | jq '.assets[] | .size, .url, .createdAt' | xargs -n3 -d'\n' | grep -v ".txt" | sed "s/\"//g" | sed -e 's| |\||g')
           C=$(gh release view --json assets --repo github.com/armbian/os | jq '.assets[] | .size, .url, .createdAt' | xargs -n3 -d'\n' | grep -v ".txt" | sed "s/\"//g" | sed -e 's| |\||g')
           D=$(gh release view --json assets --repo github.com/armbian/distribution | jq '.assets[] | .size, .url, .createdAt' | xargs -n3 -d'\n' | grep -v ".txt" | sed "s/\"//g" | sed -e 's| |\||g')
 
-          # debug
-          echo "$A" > a.txt
-          echo "$B" > b.txt
-          echo "$C" > c.txt
-          echo "$D" > d.txt
-
-          # join all in one file and compress
           for line in $A $B $C $D; do
-
               BOARD=$(echo $line | cut -d"|" -f2 | grep -Po 'Armbian.*[0-9][0-9].[0-9].*' | grep -Po '[0-9][0-9].[0-9].*' | cut -d"_" -f2)
               ARMBIAN_VERSION=$(echo $line | cut -d"|" -f2 | grep -Po 'Armbian.*[0-9][0-9].[0-9].*' | grep -Po '[0-9][0-9].[0-9].*' | cut -d"_" -f1)
               IMAGE_SIZE=$(echo $line | cut -d"|" -f1 | sed "s/\.//g" | sed "s/\,//g")
               KERNEL_BRANCH=$(echo $line | cut -d"|" -f2 | grep -Po 'Armbian.*[0-9][0-9].[0-9].*' | grep -Po '[0-9][0-9].[0-9].*' | cut -d"_" -f4)
               IMAGE_RELEASE=$(echo $line | cut -d"|" -f2 | grep -Po 'Armbian.*[0-9][0-9].[0-9].*' | grep -Po '[0-9][0-9].[0-9].*' | cut -d"_" -f3)
               IMAGE_URL=$(echo $line | cut -d"|" -f2)
-              # workarounds
               STEP_A=1
               STEP_B=2
               [[ $IMAGE_URL == *i3-wm* || $IMAGE_URL == *kde-* || $IMAGE_URL == *-rc* ]] && STEP_A=2 && STEP_B=3
@@ -162,104 +111,63 @@ jobs:
               [[ $IMAGE_EXTENSION == $KERNEL_BRANCH || $IMAGE_EXTENSION == ${IMAGE_TARGET} || $IMAGE_EXTENSION =~ boot|csot|boe|sms ]] && unset IMAGE_EXTENSION
               [[ -z ${IMAGE_TARGET} ]] && IMAGE_TARGET="server"
               FILE_EXTENSION=$(echo $IMAGE_URL | cut -d"|" -f2 | cut -d"|" -f2 | grep -Po 'Armbian.*[0-9][0-9].[0-9].*' | grep -Po '[0-9][0-9].[0-9].*' | sed 's/_sm8250-xiaomi-umi\|_sm8250-xiaomi-elish//g' | sed "s/-rc[0-9]//g" | rev | cut -d"_" -f1 | rev | sed 's/.*[^0-9]\([0-9]*\.[0-9]*\.[0-9]*\)//' | sed "s/desktop.\|minimal.//")
-              #FILE_EXTENSION=$(echo $IMAGE_URL | grep -o "oowow.*\|img.*")
-
-              # Clean out application from extension
               FILE_EXTENSION=$(echo $FILE_EXTENSION | sed 's/.*-'$IMAGE_EXTENSION'//g'  | sed -e 's/^\.//g')
-
-              # Extract extensions for weird type of images
               WEIRD_EXT=$(echo $FILE_EXTENSION | sed "s/img//g" | sed "s/^\.//g" | sed "s/\..*//g" | sed "s/xz//g" | sed "s/oowow//g")
-
               IMAGE_TYPE=$(echo $IMAGE_URL | cut -d"/" -f5)
               IMAGE_CREATED=$(echo $line | cut -d"|" -f3 | sed "s/\//-/g")
               EXPOSED=false
-
-              # Assemble redirector link
               PREFIX=""
               [[ "${IMAGE_TYPE}" == "os" ]] && PREFIX="nightly/"
               REDI_EXT=$(echo $FILE_EXTENSION | rev | cut -d"." -f1 | rev | sed "s/xz//g" | sed "s/qcow2//g" | sed "s/zip//g")
               REDI_URL="https://dl.armbian.com/${PREFIX}${BOARD,,}/${IMAGE_RELEASE^}_${KERNEL_BRANCH}${IMAGE_TARGET:+_$IMAGE_TARGET}${IMAGE_EXTENSION:+-$IMAGE_EXTENSION}${WEIRD_EXT:+-$WEIRD_EXT}${REDI_EXT:+.$REDI_EXT}"
 
-              # bypass redirector for weirdos
-              # if [[ "${FILE_EXTENSION}" =~ boot|csot|boe|sms|rootfs|qcow2 ]]; then REDI_URL=${IMAGE_URL}; fi
-
-              # check if image is exposed
               while read exposed; do
                 [[ $IMAGE_URL =~ $exposed ]] && EXPOSED=true
               done < os/exposed.map
               echo "${BOARD,,}|$ARMBIAN_VERSION|$IMAGE_URL|$REDI_URL|$IMAGE_CREATED|$IMAGE_SIZE|$IMAGE_RELEASE|$KERNEL_BRANCH|$IMAGE_TARGET|$IMAGE_EXTENSION|$EXPOSED|$IMAGE_TYPE|$FILE_EXTENSION"
-
           done | sed '1s/^/"board_slug"|"armbian_version"|"file_url"|"redi_url"|"file_updated"|"file_size"|"distro_release"|"kernel_branch"|"image_variant"|"preinstalled_application"|"promoted"|"download_repository"|"file_extension"\n/' | jc --csv | jq '{"assets": .}' > all-images.json
 
-                - name: "Add cache artifact links for checksums/signatures/torrents"
-                  run: |
-
-                    # For image assets (xz/img/zip/qcow2/etc) add additional entries
-                    # pointing to imola cache where sha/asc/torrent files are stored.
-                    # We construct URLs as: https://imola.armbian.com/cache/artifacts/<basename>.<ext>
-
-                    jq '
-                      .assets as $a
-                      | ($a + (
-                          $a
-                          | map(select(.file_url | test("\\.(xz|img|zip|iso|qcow2)$")))
-                          | map(. as $orig
-                              | [
-                                  ($orig
-                                    | .file_url = ("https://imola.armbian.com/cache/artifacts/" + ($orig.board_slug) + "/" + ($orig.file_url | split("/") | .[-1]) + ".sha")
-                                    | .file_extension = "sha"
-                                    | .download_repository = "cache"
-                                    | .file_size = 0
-                                  ),
-                                  ($orig
-                                    | .file_url = ("https://imola.armbian.com/cache/artifacts/" + ($orig.board_slug) + "/" + ($orig.file_url | split("/") | .[-1]) + ".asc")
-                                    | .file_extension = "asc"
-                                    | .download_repository = "cache"
-                                    | .file_size = 0
-                                  ),
-                                  ($orig
-                                    | .file_url = ("https://imola.armbian.com/cache/artifacts/" + ($orig.board_slug) + "/" + ($orig.file_url | split("/") | .[-1]) + ".torrent")
-                                    | .file_extension = "torrent"
-                                    | .download_repository = "cache"
-                                    | .file_size = 0
-                                  )
-                                ]
-                            ) | add
-                        )) | {assets: .}
-                    ' all-images.json > all-images-updated.json || ( echo "jq processing failed" && exit 1 )
-
-                    mv all-images-updated.json all-images.json
-
-      - name: "Download and compress torrent files"
+      - name: Add cache artifact links for checksums/signatures/torrents
         run: |
+          jq '
+            .assets as $a
+            | ($a + (
+                $a
+                | map(select(.file_url | test("\\.(xz|img|zip|iso|qcow2)$")))
+                | map(. as $orig
+                    | [
+                        ($orig
+                          | .file_url = ("https://imola.armbian.com/cache/artifacts/" + ($orig.board_slug) + "/" + ($orig.file_url | split("/") | .[-1]) + ".sha")
+                          | .file_extension = "sha"
+                          | .download_repository = "cache"
+                          | .file_size = 0
+                        ),
+                        ($orig
+                          | .file_url = ("https://imola.armbian.com/cache/artifacts/" + ($orig.board_slug) + "/" + ($orig.file_url | split("/") | .[-1]) + ".asc")
+                          | .file_extension = "asc"
+                          | .download_repository = "cache"
+                          | .file_size = 0
+                        ),
+                        ($orig
+                          | .file_url = ("https://imola.armbian.com/cache/artifacts/" + ($orig.board_slug) + "/" + ($orig.file_url | split("/") | .[-1]) + ".torrent")
+                          | .file_extension = "torrent"
+                          | .download_repository = "cache"
+                          | .file_size = 0
+                        )
+                      ]
+                  ) | add
+              )) | {assets: .}
+          ' all-images.json > all-images-updated.json || ( echo "jq processing failed" && exit 1 )
 
-          SOURCE=$(mktemp -d)
-          DESTINATION=$(mktemp -d)
-          rsync -e "ssh -p 10023 -o StrictHostKeyChecking=accept-new" -zqvr --include="*/archive/*.torrent" --exclude="/*/*/*" --exclude="_*/" --exclude="control" --exclude="quotes.txt" --exclude="*/all-torrents.zip" upload@fi.mirror.armbian.de:/mirror/dl/ ${SOURCE}
-          find ${SOURCE}/. -mindepth 3 -exec mv -i -- {} ${DESTINATION}/ \;
-          zip -qj all-torrents.zip ${DESTINATION}/*.torrent
+          mv all-images-updated.json all-images.json
 
-      - name: Commit changes if any
+      - name: Prepare data and upload artifact
         run: |
+          mkdir -p armbian.github.io/data
+          mv all-images.json armbian.github.io/data/
 
-          cd armbian.github.io
-          git checkout data
-          mkdir -p data/
-
-          cp ${{ github.workspace }}/all-torrents.zip data/
-          cp ${{ github.workspace }}/all-images.json data/
-          cp ${{ github.workspace }}/exposed.map.autoproposal data/
-          cp ${{ github.workspace }}/os/kernel-description.json data/
-
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git add data/.
-          git diff --cached --quiet || git commit -m "Update WEB indes files"
-          git push
-
-
-      - name: "Run Jira update action"
-        uses: peter-evans/repository-dispatch@v3
+      - name: Upload all-images.json artifact
+        uses: actions/upload-artifact@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          event-type: "Jira update"
+          name: all-images.json
+          path: armbian.github.io/data/all-images.json
