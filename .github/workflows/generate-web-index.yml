@@ -191,6 +191,45 @@ jobs:
 
           done | sed '1s/^/"board_slug"|"armbian_version"|"file_url"|"redi_url"|"file_updated"|"file_size"|"distro_release"|"kernel_branch"|"image_variant"|"preinstalled_application"|"promoted"|"download_repository"|"file_extension"\n/' | jc --csv | jq '{"assets": .}' > all-images.json
 
+                - name: "Add cache artifact links for checksums/signatures/torrents"
+                  run: |
+
+                    # For image assets (xz/img/zip/qcow2/etc) add additional entries
+                    # pointing to imola cache where sha/asc/torrent files are stored.
+                    # We construct URLs as: https://imola.armbian.com/cache/artifacts/<basename>.<ext>
+
+                    jq '
+                      .assets as $a
+                      | ($a + (
+                          $a
+                          | map(select(.file_url | test("\\.(xz|img|zip|iso|qcow2)$")))
+                          | map(. as $orig
+                              | [
+                                  ($orig
+                                    | .file_url = ("https://imola.armbian.com/cache/artifacts/" + ($orig.board_slug) + "/" + ($orig.file_url | split("/") | .[-1]) + ".sha")
+                                    | .file_extension = "sha"
+                                    | .download_repository = "cache"
+                                    | .file_size = 0
+                                  ),
+                                  ($orig
+                                    | .file_url = ("https://imola.armbian.com/cache/artifacts/" + ($orig.board_slug) + "/" + ($orig.file_url | split("/") | .[-1]) + ".asc")
+                                    | .file_extension = "asc"
+                                    | .download_repository = "cache"
+                                    | .file_size = 0
+                                  ),
+                                  ($orig
+                                    | .file_url = ("https://imola.armbian.com/cache/artifacts/" + ($orig.board_slug) + "/" + ($orig.file_url | split("/") | .[-1]) + ".torrent")
+                                    | .file_extension = "torrent"
+                                    | .download_repository = "cache"
+                                    | .file_size = 0
+                                  )
+                                ]
+                            ) | add
+                        )) | {assets: .}
+                    ' all-images.json > all-images-updated.json || ( echo "jq processing failed" && exit 1 )
+
+                    mv all-images-updated.json all-images.json
+
       - name: "Download and compress torrent files"
         run: |
 
